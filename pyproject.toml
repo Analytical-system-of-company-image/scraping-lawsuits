@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "parsing-lawsuits"
+version = "0.1.0"
+description = ""
+authors = ["DieNice"]
+readme = "README.md"
+packages = [{include = "parsing_lawsuits"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+selenium = "^4.10.0"
+httpx = "^0.24.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
