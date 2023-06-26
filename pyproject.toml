@@ -8,9 +8,19 @@ packages = [{include = "parsing_lawsuits"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-selenium = "^4.10.0"
 httpx = "^0.24.1"
+undetected-chromedriver = "^3.5.0"
+selenium = "^4.10.0"
+pypdf = "^3.12.0"
+pandas = "^2.0.3"
+tqdm = "^4.65.0"
 
+
+[tool.poetry.group.dev.dependencies]
+autopep8 = "^2.0.2"
+mypy = "^1.4.1"
+pylint = "^2.17.4"
+ipython = "^8.14.0"
 
 [build-system]
 requires = ["poetry-core"]
