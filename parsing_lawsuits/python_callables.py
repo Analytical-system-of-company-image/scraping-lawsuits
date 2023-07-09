@@ -292,6 +292,9 @@ def preprocessing_data(df: pd.DataFrame):
                 return PLANTIFF_CONSIDERATION
             return PLANTIFF_LOSE
 
+    df["plaintiff"] = df["plaintiff"].astype(str)
+    df["respondent"] = df["respondent"].astype(str)
+
     rows = df.to_dict("records")
 
     result_rows = []
