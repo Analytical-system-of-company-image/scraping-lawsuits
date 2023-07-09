@@ -318,7 +318,7 @@ def preprocessing_data(df: pd.DataFrame):
                 raw_debt = re.search("[\s*,*\d*\s*]+руб", text)
                 if raw_debt:
                     debt = float(raw_debt.group(0).replace(
-                        ' ', '').replace('руб', '').replace(',', '.'))
+                        ' ', '').replace('руб', '').replace('\n','').replace(',', '.'))
                 else:
                     debt = 0.0
             else:
