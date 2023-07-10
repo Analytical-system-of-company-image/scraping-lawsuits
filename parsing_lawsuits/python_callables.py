@@ -1,12 +1,13 @@
 
+import base64
 import logging
 import os
 import re
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from random import randint
-from tempfile import tempdir
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -48,6 +49,7 @@ class ElectronicCase:
     date: datetime
     path: str = field(default="")
     name_pdf: str = field(default="")
+    data: str = field(default="")
 
 
 @dataclass
@@ -64,6 +66,15 @@ class CourtCase:
 
 
 def get_lawsuits(name: str, start_url: str = "https://kad.arbitr.ru/") -> List[CourtCase]:
+    """По наименованию компании получить список электронных дел
+
+    Args:
+        name (str): Наименование компании
+        start_url (_type_, optional): Стартовая ссылка. Defaults to "https://kad.arbitr.ru/".
+
+    Returns:
+        List[CourtCase]: Список электронных дел
+    """
 
     driver = uc.Chrome(headless=True)
     driver._web_element_cls = uc.UCWebElement
@@ -115,13 +126,22 @@ def get_lawsuits(name: str, start_url: str = "https://kad.arbitr.ru/") -> List[C
     return court_cases
 
 
-def get_electronic_cases(cases: List[CourtCase]) -> List:
-    options = uc.ChromeOptions()
+def get_electronic_cases(cases: List[CourtCase], deep: int = -1) -> List:
+    """Парсит электронные документы. Достает pdf файлы с делами.
+    Сохраняет их локально в папку
 
+    Args:
+        cases (List[CourtCase]): Электронные дела
+
+    Returns:
+        List: Список электронных дел
+    """
+    options = uc.ChromeOptions()
+    if deep < 0:
+        deep = len(cases)
     driver = uc.Chrome(headless=True)
 
-    for case in tqdm(cases):
-
+    for case in tqdm(cases[:deep]):
         driver.get(case.url_court)
         time.sleep(randint(MIN_SLEEP, MAX_SLEEP))
         driver.find_elements(
@@ -134,39 +154,56 @@ def get_electronic_cases(cases: List[CourtCase]) -> List:
         for element in elements:
             pdf_url = element.find_element(
                 By.XPATH, './/a').get_attribute("href")
+            logging.info(f"pdf url:{pdf_url}")
             pdf_date = element.find_element(
                 By.CLASS_NAME, "b-case-chrono-ed-item-date").text
-
             dt = datetime.strptime(pdf_date, '%d.%m.%Y')
+            logging.info(f"pdf date:{dt}")
             tmp_electronic_case = ElectronicCase(pdf_url, dt)
+            tmp_electronic_case.name_pdf = pdf_url.split('/')[-1]
+            logging.info(f"name pdf:{tmp_electronic_case.name_pdf}")
             tmp_electronic_cases.append(tmp_electronic_case)
             pdf_urls.append(pdf_url)
+            logging.info(f"{tmp_electronic_case.name_pdf} sent to queued")
 
-        path_dir = f"{os.getcwd()}/pdf/{case.name_company}/{case.name_court}"
         if pdf_urls:
-            options = uc.ChromeOptions()
-            options.add_experimental_option('prefs', {
-                "download.default_directory": path_dir,
-                "download.prompt_for_download": False,
-                "download.directory_upgrade": True,
-                "plugins.always_open_pdf_externally": True
-            })
-            especially_driver = uc.Chrome(options=options, headless=True)
-            especially_driver.implicitly_wait(10)
-            for ecase in tmp_electronic_cases:
-                especially_driver.get(ecase.url_case)
-                name_pdf = pdf_url.split('/')[-1]
-                ecase.name_pdf = name_pdf
-                ecase.path = path_dir
-                time.sleep(randint(MIN_SLEEP+2, MAX_SLEEP+2))
-            especially_driver.close()
-        case.electronic_cases = tmp_electronic_cases
+            with tempfile.TemporaryDirectory() as tmpdirname:
+                path_dir = f"{tmpdirname}/{case.name_company}"
+                options = uc.ChromeOptions()
+                options.add_experimental_option('prefs', {
+                    "download.default_directory": path_dir,
+                    "download.prompt_for_download": False,
+                    "download.directory_upgrade": True,
+                    "plugins.always_open_pdf_externally": True
+                })
+                especially_driver = uc.Chrome(options=options, headless=True)
+                especially_driver.implicitly_wait(10)
+                for ecase in tmp_electronic_cases:
+                    logging.info(f"get {ecase.url_case}")
+                    especially_driver.get(ecase.url_case)
+                    ecase.path = path_dir
+                    time.sleep(randint(MIN_SLEEP+2, MAX_SLEEP+2))
+                    full_path = f"{path_dir}/{ecase.name_pdf}"
+                    logging.info(f"saving {ecase.name_pdf} to {full_path}")
+                    with open(full_path, "rb") as f:
+                        pdf_data = f.read()
+                        encoded = base64.b64encode(pdf_data)
+                        del pdf_data
+                        ecase.data = encoded
+                especially_driver.close()
 
+        case.electronic_cases = tmp_electronic_cases
     driver.close()
     return cases
 
 
 def export_to_csv(cases: List[CourtCase], name_company: str) -> None:
+    """Экспорт в csv файл.
+
+    Args:
+        cases (List[CourtCase]): Электронные дела
+        name_company (str): Наименование компании
+    """
     to_export = [asdict(case) for case in cases]
     result = []
     for row in to_export:
@@ -180,8 +217,37 @@ def export_to_csv(cases: List[CourtCase], name_company: str) -> None:
 
 
 def read_from_csv(path: str) -> pd.DataFrame:
+    """Чтение из csv файла
+
+    Args:
+        path (str): Пусть к csv файлу
+
+    Returns:
+        pd.DataFrame: Файл 
+    """
     df = pd.read_csv(path)
     df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def lawsuits_to_dataframe(lawsuits: List[CourtCase]) -> pd.DataFrame:
+    """Преобразование списка электронных дел в DataFrame
+
+    Args:
+        lawsuits (List[CourtCase]): Список электронных дел
+
+    Returns:
+        pd.DataFrame: Данные
+    """
+    to_export = [asdict(case) for case in lawsuits]
+    result = []
+    for row in to_export:
+        tmp_dict = {**row}
+        tmp_dict.pop("electronic_cases")
+        for sub_row in row["electronic_cases"]:
+            tmp_dict = {**tmp_dict, **sub_row}
+            result.append(tmp_dict)
+    df = pd.DataFrame(result)
     return df
 
 
@@ -318,7 +384,7 @@ def preprocessing_data(df: pd.DataFrame):
                 raw_debt = re.search("[\s*,*\d*\s*]+руб", text)
                 if raw_debt:
                     debt = float(raw_debt.group(0).replace(
-                        ' ', '').replace('руб', '').replace('\n','').replace(',', '.'))
+                        ' ', '').replace('руб', '').replace('\n', '').replace(',', '.'))
                 else:
                     debt = 0.0
             else:
@@ -329,7 +395,3 @@ def preprocessing_data(df: pd.DataFrame):
             row["court_value"] = court_value(text, row)
             result_rows.append(row)
     return result_rows
-
-
-def calculate_debts(debt: float, auth_capital: float, as_capital: float):
-    pass
