@@ -1,5 +1,5 @@
-
 import base64
+import io
 import logging
 import os
 import re
@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import httpx
+import numpy as np
 import pandas as pd
 import selenium.webdriver.support.expected_conditions as EC
 import undetected_chromedriver as uc
@@ -42,7 +43,7 @@ headers = {
 
 
 @dataclass
-class ElectronicCase:
+class LawsuitDocument:
     """Ссылки на электронные дела
     """
     url_case: str
@@ -53,7 +54,7 @@ class ElectronicCase:
 
 
 @dataclass
-class CourtCase:
+class Lawsuit:
     """Судебное дело
     """
     name_court: str
@@ -61,11 +62,31 @@ class CourtCase:
     plaintiff: str
     respondent: str
     name_company: str
-    electronic_cases: Optional[List[ElectronicCase]
-                               ] = field(default_factory=list)
+    electronic_cases: List[LawsuitDocument] = field(default=list)
 
 
-def get_lawsuits(name: str, start_url: str = "https://kad.arbitr.ru/") -> List[CourtCase]:
+@dataclass
+class FlatLawsuit:
+    """Плоские судебные дела
+    """
+    url_case: str
+    date: datetime
+    name_court: str
+    url_court: str
+    plaintiff: str
+    respondent: str
+    name_company: str
+    path: str = field(default="")
+    name_pdf: str = field(default="")
+    data: str = field(default="")
+    is_respondent: bool = field(default=False)
+    is_win: bool = field(default=False)
+    is_apply: bool = field(default=True)
+    debt: float = field(default=0.0)
+    court_value: float = field(default=0.0)
+
+
+def get_lawsuits(name: str, start_url: str = "https://kad.arbitr.ru/") -> List[Lawsuit]:
     """По наименованию компании получить список электронных дел
 
     Args:
@@ -87,7 +108,7 @@ def get_lawsuits(name: str, start_url: str = "https://kad.arbitr.ru/") -> List[C
     driver.find_elements(
         By.XPATH, '//*[@id="b-form-submit"]/div/button')[0].click()
 
-    court_cases: List[CourtCase] = []
+    court_cases: List[Lawsuit] = []
     try:
         while True:
 
@@ -110,7 +131,7 @@ def get_lawsuits(name: str, start_url: str = "https://kad.arbitr.ru/") -> List[C
                     By.CLASS_NAME, "plaintiff").text
                 respondent = item_tr.find_element(
                     By.CLASS_NAME, "respondent").text
-                tmp_court_case = CourtCase(
+                tmp_court_case = Lawsuit(
                     name_court, url, plaintiff, respondent, name)
                 court_cases.append(tmp_court_case)
                 del item_tr
@@ -126,7 +147,7 @@ def get_lawsuits(name: str, start_url: str = "https://kad.arbitr.ru/") -> List[C
     return court_cases
 
 
-def get_electronic_cases(cases: List[CourtCase], deep: int = -1) -> List:
+def get_electronic_cases(cases: List[Lawsuit], deep: int = -1) -> List:
     """Парсит электронные документы. Достает pdf файлы с делами.
     Сохраняет их локально в папку
 
@@ -141,7 +162,7 @@ def get_electronic_cases(cases: List[CourtCase], deep: int = -1) -> List:
         deep = len(cases)
     driver = uc.Chrome(headless=True)
 
-    for case in tqdm(cases[:deep]):
+    for case in tqdm(cases[:deep], "scraping lawsuits"):
         driver.get(case.url_court)
         time.sleep(randint(MIN_SLEEP, MAX_SLEEP))
         driver.find_elements(
@@ -159,7 +180,7 @@ def get_electronic_cases(cases: List[CourtCase], deep: int = -1) -> List:
                 By.CLASS_NAME, "b-case-chrono-ed-item-date").text
             dt = datetime.strptime(pdf_date, '%d.%m.%Y')
             logging.info(f"pdf date:{dt}")
-            tmp_electronic_case = ElectronicCase(pdf_url, dt)
+            tmp_electronic_case = LawsuitDocument(pdf_url, dt)
             tmp_electronic_case.name_pdf = pdf_url.split('/')[-1]
             logging.info(f"name pdf:{tmp_electronic_case.name_pdf}")
             tmp_electronic_cases.append(tmp_electronic_case)
@@ -194,121 +215,67 @@ def get_electronic_cases(cases: List[CourtCase], deep: int = -1) -> List:
 
         case.electronic_cases = tmp_electronic_cases
     driver.close()
-    return cases
+    return cases[:deep]
 
 
-def export_to_csv(cases: List[CourtCase], name_company: str) -> None:
-    """Экспорт в csv файл.
-
-    Args:
-        cases (List[CourtCase]): Электронные дела
-        name_company (str): Наименование компании
-    """
-    to_export = [asdict(case) for case in cases]
-    result = []
-    for row in to_export:
-        tmp_dict = {**row}
-        tmp_dict.pop("electronic_cases")
-        for sub_row in row["electronic_cases"]:
-            tmp_dict = {**tmp_dict, **sub_row}
-            result.append(tmp_dict)
-    df = pd.DataFrame(result)
-    df.to_csv(f"{name_company}.csv", index=False)
-
-
-def read_from_csv(path: str) -> pd.DataFrame:
-    """Чтение из csv файла
-
-    Args:
-        path (str): Пусть к csv файлу
-
-    Returns:
-        pd.DataFrame: Файл 
-    """
-    df = pd.read_csv(path)
-    df["date"] = pd.to_datetime(df["date"])
-    return df
-
-
-def lawsuits_to_dataframe(lawsuits: List[CourtCase]) -> pd.DataFrame:
-    """Преобразование списка электронных дел в DataFrame
-
-    Args:
-        lawsuits (List[CourtCase]): Список электронных дел
-
-    Returns:
-        pd.DataFrame: Данные
-    """
-    to_export = [asdict(case) for case in lawsuits]
-    result = []
-    for row in to_export:
-        tmp_dict = {**row}
-        tmp_dict.pop("electronic_cases")
-        for sub_row in row["electronic_cases"]:
-            tmp_dict = {**tmp_dict, **sub_row}
-            result.append(tmp_dict)
-    df = pd.DataFrame(result)
-    return df
-
-
-def preprocessing_data(df: pd.DataFrame):
-    """Предобработка собранных данных для дальнейшего подсчёта оценок
+def preprocessing_data(lawsuits: List[Lawsuit]) -> List[FlatLawsuit]:
+    """Обработка собранных данных для дальнейшего подсчёта оценок
 
     Args:
         df (pd.DataFrame): Плоские данные структуры CourtCase
     """
-    def is_respondent(row: Dict[str, Any]) -> bool:
+    def is_respondent(flat_lawsuit: FlatLawsuit) -> bool:
         """Компания является ответчиком
 
         Args:
-            row (Dict[str, Any]): Запись о судебном документе
+            flat_lawsuit (Dict[str, Any]): Запись о судебном документе
 
         Returns:
             bool: True/False
         """
-        name_company = row["name_company"].lower()
-        respondent = row["respondent"].lower()
+        name_company = flat_lawsuit.name_company.lower()
+        respondent = flat_lawsuit.respondent.lower()
         return name_company in respondent
 
-    def is_apply(row: Dict[str, Any]) -> bool:
+    def is_apply(flat_lawsuit: FlatLawsuit) -> bool:
         """Фильтрация по истцу и ответчику. 
         Если нет упоминания о компании, то это некорректная запись
 
         Args:
-            row (Dict[str, Any]): Запись о судебном документе
+            flat_lawsuit (FlatLawsuit): Запись о судебном документе
 
         Returns:
             bool: True/False
         """
-        name_company = row["name_company"].lower()
-        respondent = row["respondent"].lower()
-        plaintiff = row["plaintiff"].lower()
+        name_company = flat_lawsuit.name_company.lower()
+        respondent = flat_lawsuit.respondent.lower()
+        plaintiff = flat_lawsuit.plaintiff.lower()
         return (name_company in respondent) or (name_company in plaintiff)
 
-    def is_win(text: str, row: Dict[str, Any]) -> bool:
+    def is_win(text: str, flat_lawsuit: FlatLawsuit) -> bool:
         """Дело выиграно или в ином статусе
 
         Args:
             text (str): Текст дела
-            row (Dict[str, Any]): Запись о судебном документе
+            flat_lawsuit (FlatLawsuit): Запись о судебном документе
 
         Returns:
             bool: True/False
         """
         raw_win = re.search("удовлетворить", text)
-        if row["is_respondent"] and raw_win:
+        if flat_lawsuit.is_respondent and raw_win:
             return False
 
-        if row["is_respondent"] == False and raw_win:
+        if flat_lawsuit.is_respondent == False and raw_win:
             return True
         return False
 
-    def court_value(text: str, row: Dict[str, Any]) -> float:
+    def court_value(text: str, flat_lawsuit: FlatLawsuit) -> float:
         """Оценка текущего состояния дела
 
         Args:
             text (str): Текст дела
-            row (Dict[str, Any]): Запись о судебном документе
+            flat_lawsuit (FlatLawsuit): Запись о судебном документе
 
         Returns:
             float: _description_
@@ -323,9 +290,9 @@ def preprocessing_data(df: pd.DataFrame):
         PLANTIFF_STOP = 0.75
         PLANTIFF_CONSIDERATION = 0.875
 
-        is_respondent = row["is_respondent"]
+        is_respondent = flat_lawsuit.is_respondent
         if is_respondent:
-            if row["is_win"]:
+            if flat_lawsuit.is_win:
                 return RESPONDENT_WIN
             is_stop = bool(re.search("прекратить", text))
             if is_stop:
@@ -342,7 +309,7 @@ def preprocessing_data(df: pd.DataFrame):
             return RESPONDENT_LOSE
 
         else:
-            if row["is_win"]:
+            if flat_lawsuit.is_win:
                 return PLANTIFF_WIN
             is_stop = bool(re.search("прекратить", text))
             if is_stop:
@@ -358,27 +325,43 @@ def preprocessing_data(df: pd.DataFrame):
                 return PLANTIFF_CONSIDERATION
             return PLANTIFF_LOSE
 
-    df["plaintiff"] = df["plaintiff"].astype(str)
-    df["respondent"] = df["respondent"].astype(str)
+    def flatten_lawsuits(lawsuits: List[Lawsuit]) -> List[FlatLawsuit]:
+        """Преобразование списка судебных дел в плоские данные
 
-    rows = df.to_dict("records")
+        Args:
+            lawsuits (List[CourtCase]): Список электронных дел
 
-    result_rows = []
+        Returns:
+            List[Dict[str,Any]]: Плоские данные
+        """
+        lawsuits_dicts = [asdict(case) for case in lawsuits]
+        flatten_lawsuits = []
+        for row in lawsuits_dicts:
+            tmp_dict = {**row}
+            tmp_dict.pop("electronic_cases")
+            for sub_row in row["electronic_cases"]:
+                tmp_dict = {**tmp_dict, **sub_row}
+                flatten_lawsuits.append(FlatLawsuit(**tmp_dict))
+        return flatten_lawsuits
 
-    for row in tqdm(rows):
-        row["is_apply"] = is_apply(row)
+    result_lawsuits = []
 
-        if row["is_apply"]:
-            path_to_pdf = f"{row['path']}/{row['name_pdf']}"
-            reader = PdfReader(path_to_pdf)
+    flat_lawsuits = flatten_lawsuits(lawsuits)
+
+    for flat_lawsuit in tqdm(flat_lawsuits, "precessing lawsuits"):
+        flat_lawsuit.is_apply = is_apply(flat_lawsuit)
+
+        if flat_lawsuit.is_apply:
+            decoded = base64.b64decode(flat_lawsuit.data)
+            reader = PdfReader(io.BytesIO(decoded))
             text = ""
             for page in reader.pages:
                 text += page.extract_text()
             text = text.lower()
 
-            flag_respondent = is_respondent(row)
+            flag_respondent = is_respondent(flat_lawsuit)
 
-            row["is_respondent"] = flag_respondent
+            flat_lawsuit.is_respondent = flag_respondent
 
             if flag_respondent:
                 raw_debt = re.search("[\s*,*\d*\s*]+руб", text)
@@ -389,9 +372,81 @@ def preprocessing_data(df: pd.DataFrame):
                     debt = 0.0
             else:
                 debt = 0.0
-            row["debt"] = debt
+            flat_lawsuit.debt = debt
 
-            row["is_win"] = is_win(text, row)
-            row["court_value"] = court_value(text, row)
-            result_rows.append(row)
-    return result_rows
+            flat_lawsuit.is_win = is_win(text, flat_lawsuit)
+            flat_lawsuit.court_value = court_value(text, flat_lawsuit)
+            result_lawsuits.append(flat_lawsuit)
+    return result_lawsuits
+
+
+def calculate_grades(flat_lawsuits: List[FlatLawsuit],
+                     AuthC: float,
+                     AsC: float,
+                     w1=1, w2=1, w3=1, w4=1, w5=1) -> List[Dict[str, Any]]:
+    """Подсчёт судебного имиджа
+
+    Args:
+        flat_lawsuits (List[FlatLawsuit]): Обработанные судебные иски
+        AuthC (float): Уставной капитал
+        AsC (float): Активы
+        w1 (int, optional): Коэффициент a1. Defaults to 1.
+        w2 (int, optional): Коэффициент a2. Defaults to 1.
+        w3 (int, optional): Коэффициент a3. Defaults to 1.
+        w4 (int, optional): Коэффициент a4. Defaults to 1.
+        w5 (int, optional): Коэффициент a5. Defaults to 1.
+
+    Returns:
+        List[Dict[str, Any]]: _description_
+    """
+    df = pd.DataFrame([asdict(lawsuit) for lawsuit in flat_lawsuits])
+    df["date"] = pd.to_datetime(df["date"])
+    df["year"] = df["date"].dt.year
+    df["month"] = df["date"].dt.month
+    df_group = df.groupby([df.year, df.month]).agg(
+        {"debt": "sum", "url_case": "count", "is_respondent": "sum", "is_win": "sum", "court_value": "mean"})
+    del df
+    df_group = df_group.reset_index()
+    df_group["date"] = pd.to_datetime(df_group.year.astype(
+        str) + '/' + df_group.month.astype(str) + '/01')
+    df_group = df_group[df_group["date"].dt.year >= 2022]
+    df_group.rename(columns={"url_case": "count"}, inplace=True)
+
+    df_group["a1"] = (df_group["debt"]/AuthC + df_group["debt"]/AsC)
+    df_group.replace([np.inf, -np.inf], 0, inplace=True)
+
+    a_2 = []
+    for _, row in df_group.iterrows():
+        tmp_dict = row.to_dict()
+        tmp_date = tmp_dict["date"]
+        tmp_df = df_group[df_group["date"] <= tmp_date]
+        tmp_a2 = tmp_df["count"].mean() / tmp_df["count"].std()
+        a_2.append(tmp_a2)
+    df_group["a2"] = a_2
+    df_group.replace([np.inf, -np.inf, np.nan], 3.33, inplace=True)
+
+    a_3 = []
+    for _, row in df_group.iterrows():
+        tmp_dict = row.to_dict()
+        tmp_date = tmp_dict["date"]
+        tmp_df = df_group[df_group["date"] <= tmp_date]
+        tmp_a3 = tmp_df["is_respondent"].sum()/tmp_df["count"].sum()
+        a_3.append(tmp_a3)
+    df_group["a3"] = a_3
+    df_group.replace([np.inf, -np.inf, np.nan], 3.33, inplace=True)
+
+    a_4 = []
+    for _, row in df_group.iterrows():
+        tmp_dict = row.to_dict()
+        tmp_date = tmp_dict["date"]
+        tmp_df = df_group[df_group["date"] <= tmp_date]
+        tmp_a4 = tmp_df["is_win"].sum()/tmp_df["count"].sum()
+        a_4.append(tmp_a4)
+    df_group["a4"] = a_4
+    df_group.replace([np.inf, -np.inf, np.nan], 3.33, inplace=True)
+
+    df_group["a5"] = df_group["court_value"].copy()
+    w1 = w2 = w3 = w4 = w5 = 1
+    df_group['grade'] = np.sqrt(w1*(df_group['a1']**2)+w2*(df_group['a2']**2)+w3 *
+                                (df_group['a3']**2)+w4*(df_group['a4']**2)+w5*(df_group['a5']**2))
+    return df_group.to_dict()
